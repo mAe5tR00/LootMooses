@@ -1,25 +1,26 @@
 import json
 import logging
 import random
-from datetime import datetime, timedelta
-from pathlib import Path
 import asyncio
+from datetime import datetime, timedelta
 
+from pathlib import Path
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.enums import ParseMode
+from aiogram.types import FSInputFile, Message
 
 API_TOKEN = "6909049704:AAGeTidLhxR7uQoHNlsz4IU9SoD8OW9PMpo"
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
-
-# Пути к файлам
+# --- Настройки файлов ---
 FORBIDDEN_FILE = Path("forbidden_words.txt")
 WARNINGS_FILE = Path("warnings.json")
 STATS_FILE = Path("stats.json")
 
 MAX_REACT_LEVEL = 50
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+# Пользователи, которых бот игнорирует
 IGNORED_USERS = [5470301151]
 
 # Загружаем запрещённые слова
@@ -41,14 +42,12 @@ if STATS_FILE.exists():
 else:
     stats_db = {"history": []}
 
-
+# --- Функции работы с файлами ---
 def save_warnings():
     WARNINGS_FILE.write_text(json.dumps(warnings_db, ensure_ascii=False, indent=2), "utf-8")
 
-
 def save_stats():
     STATS_FILE.write_text(json.dumps(stats_db, ensure_ascii=False, indent=2), "utf-8")
-
 
 def log_warning(chat_id, user_id):
     stats_db["history"].append({
@@ -58,11 +57,9 @@ def log_warning(chat_id, user_id):
     })
     save_stats()
 
-
 def contains_bad_word(text: str):
     text = text.lower()
     return any(bad in text for bad in BAD_WORDS)
-
 
 def add_warning(chat_id, user_id):
     key = f"{chat_id}:{user_id}"
@@ -72,7 +69,6 @@ def add_warning(chat_id, user_id):
     log_warning(chat_id, user_id)
     return count
 
-
 FUNNY_REACTS = [
     "Кажется, {mention} снова пытается выебнуться 😏",
     "{mention}, ну ты конечно даёшь 😂",
@@ -81,7 +77,9 @@ FUNNY_REACTS = [
     "{mention}, так можно стать легендой этого чата 😎",
 ]
 
-
+# ---------------------------
+# Генерация статистики
+# ---------------------------
 def generate_stats_report(chat_id):
     now = datetime.utcnow()
     day_ago = now - timedelta(days=1)
@@ -93,7 +91,6 @@ def generate_stats_report(chat_id):
     for event in stats_db["history"]:
         if event["chat_id"] != chat_id:
             continue
-
         ts = datetime.fromisoformat(event["timestamp"])
         user_id = event["user_id"]
 
@@ -106,10 +103,7 @@ def generate_stats_report(chat_id):
         if not data:
             return "Нарушителей нет 🎉"
         sorted_users = sorted(data.items(), key=lambda x: x[1], reverse=True)
-        lines = []
-        for uid, count in sorted_users[:10]:
-            lines.append(f"👤 <code>{uid}</code> → {count}")
-        return "\n".join(lines)
+        return "\n".join(f"👤 <code>{uid}</code> → {count}" for uid, count in sorted_users[:10])
 
     return (
         "🏆 <b>Статистика нарушений</b>\n\n"
@@ -119,15 +113,9 @@ def generate_stats_report(chat_id):
         f"{format_top(weekly)}"
     )
 
-
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher()
-
-
 # ---------------------------
-# Обработка сообщений
+# Обработчики сообщений
 # ---------------------------
-@dp.message()
 async def handle_message(message: types.Message):
     user = message.from_user
     chat_id = message.chat.id
@@ -144,55 +132,55 @@ async def handle_message(message: types.Message):
             pass
 
         count = add_warning(chat_id, user.id)
-        mention = message.from_user.get_mention(as_html=True)
+        mention = user.mention_html()
 
         if count % 5 == 0 and count <= MAX_REACT_LEVEL:
             reaction = random.choice(FUNNY_REACTS).format(mention=mention)
             reaction += f"\n\nВсего предупреждений: {count}"
-            await message.answer(reaction, parse_mode=ParseMode.HTML)
-
-
-# ---------------------------
-# Команда для chat_id
-# ---------------------------
-@dp.message(Command(commands=["chatid"]))
-async def chat_id_command(message: types.Message):
-    await message.reply(f"ID этого чата: <code>{message.chat.id}</code>", parse_mode=ParseMode.HTML)
-
+            await message.answer(reaction, parse_mode="HTML")
 
 # ---------------------------
-# Команда для статистики
+# Команда для получения chat_id
 # ---------------------------
-@dp.message(Command(commands=["stats"]))
-async def stats_command(message: types.Message):
-    report = generate_stats_report(message.chat.id)
-    await message.reply(report, parse_mode=ParseMode.HTML)
-
+async def chatid_command(message: types.Message):
+    chat_id = message.chat.id
+    await message.reply(f"ID этого чата: <code>{chat_id}</code>", parse_mode="HTML")
 
 # ---------------------------
-# Авто-отправка статистики дважды в день (14:00 и 19:00 Алматы)
+# Фоновая задача для отправки статистики
 # ---------------------------
-async def scheduled_stats():
-    # Время в UTC: Алматы +5 → 14:00 = 09:00 UTC, 19:00 = 14:00 UTC
-    chat_id = -1003388389759  # <-- Замени на свой чат
+async def stats_loop(bot: Bot, chat_id: int):
     while True:
+        report = generate_stats_report(chat_id)
+        try:
+            await bot.send_message(chat_id, report, parse_mode="HTML")
+        except Exception as e:
+            log.error(f"Ошибка при отправке статистики: {e}")
+        # Ждем до следующего раза (пример: 14:00 и 19:00 по Алматы UTC+5)
         now = datetime.utcnow()
-        for target_hour in [9, 14]:
-            target_time = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
-            if now > target_time:
-                target_time += timedelta(days=1)
-            wait_seconds = (target_time - now).total_seconds()
-            await asyncio.sleep(wait_seconds)
-            report = generate_stats_report(chat_id)
-            await bot.send_message(chat_id, report, parse_mode=ParseMode.HTML)
-        await asyncio.sleep(60)  # маленькая пауза перед повторной проверкой
+        next_times = [now.replace(hour=9, minute=0, second=0, microsecond=0),
+                      now.replace(hour=14, minute=0, second=0, microsecond=0)]
+        next_send = min(t for t in next_times if t > now)
+        wait_seconds = (next_send - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
 
+# ---------------------------
+# Запуск бота
+# ---------------------------
+async def main():
+    bot = Bot(token=API_TOKEN)
+    dp = Dispatcher()
+
+    # Обработчики
+    dp.message.register(handle_message)
+    dp.message.register(chatid_command, Command(commands=["chatid"]))
+
+    chat_id = -100000000  # <-- Вставь сюда свой chat_id
+
+    # Запуск фона
+    asyncio.create_task(stats_loop(bot, chat_id))
+
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    async def main():
-        # Запуск авто-статистики
-        asyncio.create_task(scheduled_stats())
-        # Запуск бота
-        await dp.start_polling(bot)
-
     asyncio.run(main())
