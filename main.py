@@ -8,7 +8,7 @@ from telegram import Update
 from telegram.constants import ParseMode, ChatMemberStatus
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, filters,
-    ContextTypes, ChatMemberHandler
+    ContextTypes, ChatMemberHandler, CommandHandler
 )
 
 API_TOKEN = "6909049704:AAGeTidLhxR7uQoHNlsz4IU9SoD8OW9PMpo"
@@ -103,7 +103,7 @@ def generate_stats_report(chat_id):
 
     def format_top(data):
         if not data:
-            return "Пидаразов нет 🎉"
+            return "Нарушителей нет 🎉"
         sorted_users = sorted(data.items(), key=lambda x: x[1], reverse=True)
         lines = []
         for uid, count in sorted_users[:10]:
@@ -111,7 +111,7 @@ def generate_stats_report(chat_id):
         return "\n".join(lines)
 
     return (
-        "🏆 <b>Статистика Пидаразов</b>\n\n"
+        "🏆 <b>Статистика нарушений</b>\n\n"
         "📅 <b>За последние 24 часа</b>:\n"
         f"{format_top(daily)}\n\n"
         "📈 <b>За последние 7 дней</b>:\n"
@@ -161,6 +161,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.HTML
             )
 
+# ---------------------------
+# 📌 Команда для определения chat_id
+# ---------------------------
+async def chat_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat.id
+    # Ответ бота прямо на твоё сообщение
+    await update.message.reply_text(f"ID этого чата: <code>{chat_id}</code>", parse_mode=ParseMode.HTML)
+
 async def on_bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_status = update.my_chat_member.new_chat_member.status
     chat_id = update.my_chat_member.chat.id
@@ -177,9 +185,10 @@ def main():
     # Обработчики
     app.add_handler(ChatMemberHandler(on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("chatid", chat_id_command))  # <-- команда для получения chat_id
 
     # ID чата для статистики
-    chat_id = -100000000  # <-- Заменить на ID своего чата!
+    chat_id = -1003388389759  # <-- Заменить на ID своего чата!
 
     # ⏰ Планировщик
     app.job_queue.run_daily(send_stats, time=time(9, 0), data={"chat_id": chat_id})   # 14:00 по Алматы
