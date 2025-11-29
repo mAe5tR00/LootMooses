@@ -4,7 +4,6 @@ import random
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.filters import Command
@@ -18,7 +17,6 @@ API_TOKEN = "6909049704:AAGeTidLhxR7uQoHNlsz4IU9SoD8OW9PMpo"  # <-- вставь
 FORBIDDEN_FILE = Path("forbidden_words.txt")
 WARNINGS_FILE = Path("warnings.json")
 STATS_FILE = Path("stats.json")
-
 MAX_REACT_LEVEL = 50
 IGNORED_USERS = [5470301151]  # Игнорируемые пользователи
 
@@ -91,17 +89,13 @@ def generate_stats_report(chat_id):
     now = datetime.utcnow()
     day_ago = now - timedelta(days=1)
     week_ago = now - timedelta(days=7)
-
     daily = {}
     weekly = {}
-
     for event in stats_db["history"]:
         if event["chat_id"] != chat_id:
             continue
-
         ts = datetime.fromisoformat(event["timestamp"])
         username = event.get("username") or str(event["user_id"])
-
         if ts > day_ago:
             daily[username] = daily.get(username, 0) + 1
         if ts > week_ago:
@@ -122,30 +116,25 @@ def generate_stats_report(chat_id):
         f"{format_top(weekly)}"
     )
 
+def get_next_send_time(now):
+    send_hours = [14, 19]
+    candidates = []
+    for hour in send_hours:
+        target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        candidates.append(target)
+    return min(candidates)
+
 async def scheduler(bot: Bot, chat_id: int):
-    """Авто-отправка статистики каждый день в 14:00 и 19:00 по Алматы"""
+    """Авто-отправка статистики каждый день в 14:00 и 19:00 по Алматы (предполагая, что системное время - локальное)"""
     while True:
         now = datetime.now()
-        # 14:00
-        target = now.replace(hour=14, minute=0, second=0, microsecond=0)
-        if now > target:
-            target += timedelta(days=1)
+        target = get_next_send_time(now)
         await asyncio.sleep((target - now).total_seconds())
         report = generate_stats_report(chat_id)
         try:
-            await bot.send_message(chat_id, report, parse_mode="HTML")
-        except Exception as e:
-            log.error(f"Ошибка при отправке статистики: {e}")
-
-        # 19:00
-        now2 = datetime.now()
-        target2 = now2.replace(hour=19, minute=0, second=0, microsecond=0)
-        if now2 > target2:
-            target2 += timedelta(days=1)
-        await asyncio.sleep((target2 - now2).total_seconds())
-        report = generate_stats_report(chat_id)
-        try:
-            await bot.send_message(chat_id, report, parse_mode="HTML")
+            await bot.send_message(chat_id, report)
         except Exception as e:
             log.error(f"Ошибка при отправке статистики: {e}")
 
@@ -155,27 +144,31 @@ async def scheduler(bot: Bot, chat_id: int):
 async def handle_message(message: Message, bot: Bot):
     if not message.text or message.from_user.id in IGNORED_USERS:
         return
-
     if contains_bad_word(message.text):
         try:
             await message.delete()
         except Exception:
             pass
-
-        username = message.from_user.username or f"@{message.from_user.id}"
+        username = message.from_user.username or message.from_user.first_name
         count = add_warning(message.chat.id, message.from_user.id, username)
-        mention = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
-
+        mention = f'<a href="tg://user?id={message.from_user.id}">{message.from_user.first_name}</a>'
         if count % 5 == 0 and count <= MAX_REACT_LEVEL:
             reaction = random.choice(FUNNY_REACTS).format(mention=mention)
             reaction += f"\n\nВсего предупреждений: {count}"
-            await message.answer(reaction, parse_mode="HTML")
+            await message.answer(reaction)
 
 # --------------------
 # Команда chatid
 # --------------------
 async def chatid_command(message: Message):
-    await message.reply(f"ID этого чата: <code>{message.chat.id}</code>", parse_mode="HTML")
+    await message.reply(f"ID этого чата: <code>{message.chat.id}</code>")
+
+# --------------------
+# Команда stats (опционально, для ручного вызова)
+# --------------------
+async def stats_command(message: Message):
+    report = generate_stats_report(message.chat.id)
+    await message.reply(report)
 
 # --------------------
 # Запуск бота
@@ -183,21 +176,17 @@ async def chatid_command(message: Message):
 async def main():
     bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
-
     # Обработчики
-    dp.message.register(handle_message, F.text & ~F.command)
+    dp.message.register(handle_message, F.text & ~Command())
     dp.message.register(chatid_command, Command(commands=["chatid"]))
-
+    dp.message.register(stats_command, Command(commands=["stats"]))
     # ID чата для автоотправки статистики
     chat_id_for_stats = -1003388389759  # <-- вставь свой канал/чат
-
     # Старт авто-отправки статистики после запуска
     async def start_scheduler(_):
         asyncio.create_task(scheduler(bot, chat_id_for_stats))
-
     dp.startup.register(start_scheduler)
     dp.startup.register(lambda _: log.info("Бот запущен"))
-
     # Запуск polling
     await dp.start_polling(bot)
 
