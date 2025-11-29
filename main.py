@@ -1,28 +1,27 @@
 import json
 import logging
 import random
-import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from pathlib import Path
+import asyncio
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ChatMemberUpdated
-from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.client.bot import DefaultBotProperties
 from aiogram.filters import Command
-from aiogram.utils.exceptions import TelegramBadRequest
+from aiogram.types import Message, ChatMemberUpdated
+from aiogram.exceptions import TelegramBadRequest
 
-API_TOKEN = "6909049704:AAGeTidLhxR7uQoHNlsz4IU9SoD8OW9PMpo"  # вставь свой токен
+API_TOKEN = "6909049704:AAGeTidLhxR7uQoHNlsz4IU9SoD8OW9PMpo"
 
 FORBIDDEN_FILE = Path("forbidden_words.txt")
 WARNINGS_FILE = Path("warnings.json")
 STATS_FILE = Path("stats.json")
-CHAT_ID = -1003388389759  # вставь ID своего чата
 
 MAX_REACT_LEVEL = 50
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# Пользователи, которых бот игнорирует
 IGNORED_USERS = [5470301151]
 
 # Загрузка запрещённых слов
@@ -50,9 +49,11 @@ def save_warnings():
 def save_stats():
     STATS_FILE.write_text(json.dumps(stats_db, ensure_ascii=False, indent=2), "utf-8")
 
-def log_warning(user_id: int):
+def log_warning(chat_id, user_id, username):
     stats_db["history"].append({
+        "chat_id": chat_id,
         "user_id": user_id,
+        "username": username,
         "timestamp": datetime.utcnow().isoformat()
     })
     save_stats()
@@ -63,11 +64,12 @@ def contains_bad_word(text: str):
     text = text.lower()
     return any(bad in text for bad in BAD_WORDS)
 
-def add_warning(user_id: int):
-    count = warnings_db.get(str(user_id), 0) + 1
-    warnings_db[str(user_id)] = count
+def add_warning(chat_id, user_id, username):
+    key = f"{chat_id}:{user_id}"
+    count = warnings_db.get(key, 0) + 1
+    warnings_db[key] = count
     save_warnings()
-    log_warning(user_id)
+    log_warning(chat_id, user_id, username)
     return count
 
 FUNNY_REACTS = [
@@ -78,7 +80,7 @@ FUNNY_REACTS = [
     "{mention}, так можно стать легендой этого чата 😎",
 ]
 
-def generate_stats_report():
+def generate_stats_report(chat_id):
     now = datetime.utcnow()
     day_ago = now - timedelta(days=1)
     week_ago = now - timedelta(days=7)
@@ -87,24 +89,25 @@ def generate_stats_report():
     weekly = {}
 
     for event in stats_db["history"]:
+        if event["chat_id"] != chat_id:
+            continue
+
         ts = datetime.fromisoformat(event["timestamp"])
-        user_id = event["user_id"]
+        username = event.get("username") or str(event["user_id"])
 
         if ts > day_ago:
-            daily[user_id] = daily.get(user_id, 0) + 1
+            daily[username] = daily.get(username, 0) + 1
+
         if ts > week_ago:
-            weekly[user_id] = weekly.get(user_id, 0) + 1
+            weekly[username] = weekly.get(username, 0) + 1
 
     def format_top(data):
         if not data:
             return "Нарушителей нет 🎉"
         sorted_users = sorted(data.items(), key=lambda x: x[1], reverse=True)
         lines = []
-        for uid, count in sorted_users[:10]:
-            # Подставляем никнейм, если есть
-            user = dp.bot.get_chat(uid)
-            mention = f"@{user.username}" if user and user.username else str(uid)
-            lines.append(f"👤 {mention} → {count}")
+        for uname, count in sorted_users[:10]:
+            lines.append(f"👤 {uname} → {count}")
         return "\n".join(lines)
 
     return (
@@ -115,67 +118,69 @@ def generate_stats_report():
         f"{format_top(weekly)}"
     )
 
-async def send_stats():
+async def send_stats(bot: Bot, chat_id: int):
+    report = generate_stats_report(chat_id)
     try:
-        report = generate_stats_report()
-        await bot.send_message(CHAT_ID, report)
+        await bot.send_message(chat_id, report, parse_mode="HTML")
     except TelegramBadRequest as e:
         log.error(f"Ошибка при отправке статистики: {e}")
 
-# -------------------- Обработчики --------------------
+# --------------------------- Обработка сообщений ---------------------------
+
 async def handle_message(message: Message):
-    if not message.text:
+    if not message.text or message.from_user.id in IGNORED_USERS:
         return
-    if message.from_user.id in IGNORED_USERS:
-        return
+
+    user = message.from_user
+    chat_id = message.chat.id
+    username = user.username or f"@{user.first_name}"
+
     if contains_bad_word(message.text):
+        # Удаляем сообщение
         try:
             await message.delete()
         except TelegramBadRequest:
             pass
 
-        count = add_warning(message.from_user.id)
-        mention = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+        count = add_warning(chat_id, user.id, username)
         if count % 5 == 0 and count <= MAX_REACT_LEVEL:
-            reaction = random.choice(FUNNY_REACTS).format(mention=mention)
+            reaction = random.choice(FUNNY_REACTS).format(mention=username)
             reaction += f"\n\nВсего предупреждений: {count}"
-            try:
-                await message.answer(reaction)
-            except TelegramBadRequest:
-                pass
+            await message.answer(reaction)
 
-async def chat_id_command(message: Message):
-    await message.reply(f"ID этого чата: <code>{message.chat.id}</code>", parse_mode="HTML")
+# --------------------------- Команды ---------------------------
 
-async def on_bot_added(chat_member: ChatMemberUpdated):
-    status = chat_member.new_chat_member.status
-    if status in ("member", "administrator"):
-        try:
-            await bot.send_message(chat_member.chat.id, "Я на месте! Фильтрую Ваш базар и веду статистику нарушений 👀")
-        except TelegramBadRequest:
-            pass
+async def chatid_command(message: Message):
+    await message.reply(f"ID этого чата: {message.chat.id}")
 
-# -------------------- Запуск бота --------------------
-async def scheduler():
+# --------------------------- Старт и автоотправка ---------------------------
+
+async def scheduler(bot: Bot, chat_id: int):
     while True:
-        now = datetime.utcnow()
-        # 14:00 по Алматы = 9:00 UTC, 19:00 = 14:00 UTC
-        send_times = [9, 14]
-        for hour in send_times:
-            if now.hour == hour and now.minute == 0:
-                await send_stats()
-        await asyncio.sleep(60)
+        now = datetime.now()
+        # Отправляем в 14:00 и 19:00 по местному времени
+        for target_hour in [14, 19]:
+            target = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+            if now > target:
+                target += timedelta(days=1)
+            await asyncio.sleep((target - now).total_seconds())
+            await send_stats(bot, chat_id)
+        await asyncio.sleep(60)  # небольшая задержка чтобы не перегружать цикл
 
 async def main():
-    global bot, dp
-    session = AiohttpSession()
-    bot = Bot(token=API_TOKEN, session=session, default=DefaultBotProperties(parse_mode="HTML"))
+    bot = Bot(token=API_TOKEN)
     dp = Dispatcher()
-    dp.message.register(handle_message)
-    dp.message.register(chat_id_command, Command(commands=["chatid"]))
-    dp.chat_member.register(on_bot_added)
 
-    asyncio.create_task(scheduler())
+    dp.startup.register(lambda _: log.info("Бот запущен"))
+    dp.message.register(handle_message, F.text & ~F.command)
+    dp.message.register(chatid_command, Command(commands=["chatid"]))
+
+    # Укажи свой канал или чат, куда будет отправляться статистика
+    chat_id_for_stats = -1003388389759
+
+    # Запуск планировщика
+    asyncio.create_task(scheduler(bot, chat_id_for_stats))
+
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
