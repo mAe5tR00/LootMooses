@@ -175,7 +175,7 @@ async def main():
     dp.message.register(handle_message)
     dp.message.register(chatid_command, Command(commands=["chatid"]))
 
-    chat_id = -100000000  # <-- Вставь сюда свой chat_id
+    chat_id = -1003388389759  # <-- Вставь сюда свой chat_id
 
     # Запуск фона
     asyncio.create_task(stats_loop(bot, chat_id))
@@ -184,3 +184,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
