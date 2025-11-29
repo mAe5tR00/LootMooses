@@ -3,14 +3,12 @@ import logging
 import random
 from datetime import datetime, timedelta
 from pathlib import Path
+import asyncio
 
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import Message
 from aiogram.filters import Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.utils import exceptions
 from aiogram import html
-from aiogram import asyncio
+from aiogram.exceptions import TelegramBadRequest
 
 API_TOKEN = "6909049704:AAGeTidLhxR7uQoHNlsz4IU9SoD8OW9PMpo"
 
@@ -19,12 +17,11 @@ WARNINGS_FILE = Path("warnings.json")
 STATS_FILE = Path("stats.json")
 
 MAX_REACT_LEVEL = 50
-AUTO_STATS_HOURS = [9, 14]  # Отправка статистики в 09:00 и 14:00 UTC
+AUTO_STATS_HOURS = [9, 14]  # UTC время отправки статистики
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Пользователи, которых бот игнорирует
 IGNORED_USERS = [5470301151]
 
 # Загружаем запрещённые слова
@@ -66,7 +63,7 @@ def log_warning(chat_id: int, user: types.User):
 
 
 def contains_bad_word(text: str):
-    if text is None:
+    if not text:
         return False
     text = text.lower()
     return any(bad in text for bad in BAD_WORDS)
@@ -129,7 +126,7 @@ async def send_stats(bot: Bot, chat_id: int):
     try:
         report = generate_stats_report(chat_id)
         await bot.send_message(chat_id, report, parse_mode="HTML")
-    except exceptions.TelegramBadRequest:
+    except TelegramBadRequest:
         log.error(f"Не удалось отправить статистику в чат {chat_id}")
 
 
@@ -144,11 +141,10 @@ async def auto_send_stats(bot: Bot, chat_id: int):
             await send_stats(bot, chat_id)
 
 
-async def handle_message(message: Message):
+async def handle_message(message: types.Message):
     user = message.from_user
     chat_id = message.chat.id
 
-    # Игнорируем определённых пользователей
     if user.id in IGNORED_USERS:
         return
 
@@ -167,11 +163,11 @@ async def handle_message(message: Message):
             reaction += f"\n\nВсего предупреждений: {count}"
             try:
                 await message.answer(reaction, parse_mode="HTML")
-            except exceptions.TelegramBadRequest:
+            except TelegramBadRequest:
                 pass
 
 
-async def chat_id_command(message: Message):
+async def chat_id_command(message: types.Message):
     chat_id = message.chat.id
     await message.reply(f"ID этого чата: <code>{chat_id}</code>", parse_mode="HTML")
 
@@ -180,17 +176,13 @@ async def main():
     bot = Bot(token=API_TOKEN, parse_mode="HTML")
     dp = Dispatcher()
 
-    # Обработчики
     dp.message.register(handle_message, F.text)
     dp.message.register(chat_id_command, Command(commands=["chatid"]))
 
-    # ID чата для автоотправки статистики
-    CHAT_ID = -1003388389759  # <-- Вставьте сюда ID вашего канала или группы
+    # Вставьте сюда ID вашего чата или канала
+    CHAT_ID = -1003388389759
 
-    # Запуск автоотправки статистики
     asyncio.create_task(auto_send_stats(bot, CHAT_ID))
-
-    # Запуск бота
     await dp.start_polling(bot)
 
 
