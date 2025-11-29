@@ -3,12 +3,11 @@ import logging
 import random
 from datetime import datetime, timedelta
 from pathlib import Path
+import asyncio
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ParseMode
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram import F
+from aiogram.enums import ParseMode
 
 API_TOKEN = "6909049704:AAGeTidLhxR7uQoHNlsz4IU9SoD8OW9PMpo"
 
@@ -42,11 +41,14 @@ if STATS_FILE.exists():
 else:
     stats_db = {"history": []}
 
+
 def save_warnings():
     WARNINGS_FILE.write_text(json.dumps(warnings_db, ensure_ascii=False, indent=2), "utf-8")
 
+
 def save_stats():
     STATS_FILE.write_text(json.dumps(stats_db, ensure_ascii=False, indent=2), "utf-8")
+
 
 def log_warning(chat_id, user_id):
     stats_db["history"].append({
@@ -56,9 +58,11 @@ def log_warning(chat_id, user_id):
     })
     save_stats()
 
+
 def contains_bad_word(text: str):
     text = text.lower()
     return any(bad in text for bad in BAD_WORDS)
+
 
 def add_warning(chat_id, user_id):
     key = f"{chat_id}:{user_id}"
@@ -68,6 +72,7 @@ def add_warning(chat_id, user_id):
     log_warning(chat_id, user_id)
     return count
 
+
 FUNNY_REACTS = [
     "Кажется, {mention} снова пытается выебнуться 😏",
     "{mention}, ну ты конечно даёшь 😂",
@@ -75,6 +80,7 @@ FUNNY_REACTS = [
     "{mention}, осторожнее со словами пездюк 😇",
     "{mention}, так можно стать легендой этого чата 😎",
 ]
+
 
 def generate_stats_report(chat_id):
     now = datetime.utcnow()
@@ -113,13 +119,15 @@ def generate_stats_report(chat_id):
         f"{format_top(weekly)}"
     )
 
+
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
+
 
 # ---------------------------
 # Обработка сообщений
 # ---------------------------
-@dp.message(F.text)
+@dp.message()
 async def handle_message(message: types.Message):
     user = message.from_user
     chat_id = message.chat.id
@@ -132,7 +140,7 @@ async def handle_message(message: types.Message):
         # Удаляем сообщение
         try:
             await message.delete()
-        except:
+        except Exception:
             pass
 
         count = add_warning(chat_id, user.id)
@@ -143,12 +151,14 @@ async def handle_message(message: types.Message):
             reaction += f"\n\nВсего предупреждений: {count}"
             await message.answer(reaction, parse_mode=ParseMode.HTML)
 
+
 # ---------------------------
 # Команда для chat_id
 # ---------------------------
 @dp.message(Command(commands=["chatid"]))
 async def chat_id_command(message: types.Message):
     await message.reply(f"ID этого чата: <code>{message.chat.id}</code>", parse_mode=ParseMode.HTML)
+
 
 # ---------------------------
 # Команда для статистики
@@ -158,9 +168,31 @@ async def stats_command(message: types.Message):
     report = generate_stats_report(message.chat.id)
     await message.reply(report, parse_mode=ParseMode.HTML)
 
+
 # ---------------------------
-# Запуск бота
+# Авто-отправка статистики дважды в день (14:00 и 19:00 Алматы)
 # ---------------------------
+async def scheduled_stats():
+    # Время в UTC: Алматы +5 → 14:00 = 09:00 UTC, 19:00 = 14:00 UTC
+    chat_id = -1003388389759  # <-- Замени на свой чат
+    while True:
+        now = datetime.utcnow()
+        for target_hour in [9, 14]:
+            target_time = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+            if now > target_time:
+                target_time += timedelta(days=1)
+            wait_seconds = (target_time - now).total_seconds()
+            await asyncio.sleep(wait_seconds)
+            report = generate_stats_report(chat_id)
+            await bot.send_message(chat_id, report, parse_mode=ParseMode.HTML)
+        await asyncio.sleep(60)  # маленькая пауза перед повторной проверкой
+
+
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(dp.start_polling(bot))
+    async def main():
+        # Запуск авто-статистики
+        asyncio.create_task(scheduled_stats())
+        # Запуск бота
+        await dp.start_polling(bot)
+
+    asyncio.run(main())
