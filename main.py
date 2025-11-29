@@ -1,27 +1,26 @@
 import json
 import logging
 import random
-from datetime import time, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from telegram import Update
-from telegram.constants import ParseMode, ChatMemberStatus
-from telegram.ext import (
-    ApplicationBuilder, MessageHandler, filters,
-    ContextTypes, ChatMemberHandler, CommandHandler
-)
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import ParseMode
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram import F
 
 API_TOKEN = "6909049704:AAGeTidLhxR7uQoHNlsz4IU9SoD8OW9PMpo"
 
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+# Пути к файлам
 FORBIDDEN_FILE = Path("forbidden_words.txt")
 WARNINGS_FILE = Path("warnings.json")
 STATS_FILE = Path("stats.json")
 
 MAX_REACT_LEVEL = 50
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
-
-# Пользователи, которых бот игнорирует
 IGNORED_USERS = [5470301151]
 
 # Загружаем запрещённые слова
@@ -77,9 +76,6 @@ FUNNY_REACTS = [
     "{mention}, так можно стать легендой этого чата 😎",
 ]
 
-# ---------------------------
-# 📊 ГЕНЕРАЦИЯ СТАТИСТИКИ
-# ---------------------------
 def generate_stats_report(chat_id):
     now = datetime.utcnow()
     day_ago = now - timedelta(days=1)
@@ -97,7 +93,6 @@ def generate_stats_report(chat_id):
 
         if ts > day_ago:
             daily[user_id] = daily.get(user_id, 0) + 1
-
         if ts > week_ago:
             weekly[user_id] = weekly.get(user_id, 0) + 1
 
@@ -118,83 +113,54 @@ def generate_stats_report(chat_id):
         f"{format_top(weekly)}"
     )
 
-async def send_stats(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.data["chat_id"]
-    report = generate_stats_report(chat_id)
-    await context.bot.send_message(
-        chat_id,
-        report,
-        parse_mode=ParseMode.HTML
-    )
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher()
 
 # ---------------------------
-# 📌 ОБРАБОТКА СООБЩЕНИЙ
+# Обработка сообщений
 # ---------------------------
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
+@dp.message(F.text)
+async def handle_message(message: types.Message):
+    user = message.from_user
+    chat_id = message.chat.id
 
-    user = update.message.from_user
-    chat_id = update.message.chat.id
-
-    # Игнорируем определённых пользователей
     if user.id in IGNORED_USERS:
         return
 
-    text = update.message.text
+    text = message.text
     if contains_bad_word(text):
         # Удаляем сообщение
         try:
-            await update.message.delete()
+            await message.delete()
         except:
             pass
 
         count = add_warning(chat_id, user.id)
-        mention = user.mention_html()
+        mention = message.from_user.get_mention(as_html=True)
 
         if count % 5 == 0 and count <= MAX_REACT_LEVEL:
             reaction = random.choice(FUNNY_REACTS).format(mention=mention)
             reaction += f"\n\nВсего предупреждений: {count}"
-            await context.bot.send_message(
-                chat_id,
-                reaction,
-                parse_mode=ParseMode.HTML
-            )
+            await message.answer(reaction, parse_mode=ParseMode.HTML)
 
 # ---------------------------
-# 📌 Команда для определения chat_id
+# Команда для chat_id
 # ---------------------------
-async def chat_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat.id
-    # Ответ бота прямо на твоё сообщение
-    await update.message.reply_text(f"ID этого чата: <code>{chat_id}</code>", parse_mode=ParseMode.HTML)
+@dp.message(Command(commands=["chatid"]))
+async def chat_id_command(message: types.Message):
+    await message.reply(f"ID этого чата: <code>{message.chat.id}</code>", parse_mode=ParseMode.HTML)
 
-async def on_bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_status = update.my_chat_member.new_chat_member.status
-    chat_id = update.my_chat_member.chat.id
-    if new_status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER):
-        await context.bot.send_message(
-            chat_id,
-            "Я на месте! Фильтрую Ваш базар и веду статистику нарушений 👀"
-        )
+# ---------------------------
+# Команда для статистики
+# ---------------------------
+@dp.message(Command(commands=["stats"]))
+async def stats_command(message: types.Message):
+    report = generate_stats_report(message.chat.id)
+    await message.reply(report, parse_mode=ParseMode.HTML)
 
-def main():
-    # Создаём приложение (JobQueue автоматически создаётся, если установлен PTB с job-queue)
-    app = ApplicationBuilder().token(API_TOKEN).build()
-
-    # Обработчики
-    app.add_handler(ChatMemberHandler(on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CommandHandler("chatid", chat_id_command))  # <-- команда для получения chat_id
-
-    # ID чата для статистики
-    chat_id = -1003388389759  # <-- Заменить на ID своего чата!
-
-    # ⏰ Планировщик
-    app.job_queue.run_daily(send_stats, time=time(9, 0), data={"chat_id": chat_id})   # 14:00 по Алматы
-    app.job_queue.run_daily(send_stats, time=time(14, 0), data={"chat_id": chat_id})  # 19:00 по Алматы
-
-    app.run_polling()
-
+# ---------------------------
+# Запуск бота
+# ---------------------------
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(dp.start_polling(bot))
